@@ -283,9 +283,9 @@ def update_data_yaml(data_yaml_path, data_dir):
 def main():
     try:
         # Configuration
-        data_dir = Path("Traffic.v3i.yolov8").resolve()
+        data_dir = Path("Traffic.v3i.yolov8").resolve()  # Updated path
         data_yaml = data_dir / "data.yaml"
-        num_epochs = 300
+        num_epochs = 100
         batch_size = 16
         image_size = 640
         val_split = 0.2  # 20% for validation
@@ -300,48 +300,6 @@ def main():
         print(f"\nUpdating dataset configuration...")
         update_data_yaml(data_yaml, data_dir)
 
-        # Verify dataset structure
-        print(f"\nPreparing dataset from: {data_dir}")
-        train_dir, _ = verify_dataset_structure(data_dir)
-
-        # Enhance dataset
-        enhanced_dir = train_dir.parent / "images_enhanced"
-        enhanced_dir.mkdir(parents=True, exist_ok=True)
-
-        # Process training images
-        print("\nEnhancing training images...")
-        processed = 0
-        errors = 0
-
-        for img_path in train_dir.glob("*.[jJ][pP][gG]"):
-            try:
-                # Read image
-                img = cv2.imread(str(img_path))
-
-                if img is None:
-                    print(f"Warning: Could not read {img_path.name}")
-                    errors += 1
-                    continue
-
-                # Enhance colors and contrast
-                enhanced = enhance_traffic_colors(img)
-                enhanced = enhance_crosswalk(enhanced)
-
-                # Resize with letterboxing
-                enhanced = letterbox_resize(enhanced, (640, 640))
-
-                # Save enhanced image
-                output_path = enhanced_dir / img_path.name
-                cv2.imwrite(str(output_path), enhanced)
-                processed += 1
-
-            except Exception as e:
-                print(f"Error processing {img_path.name}: {str(e)}")
-                errors += 1
-
-        print(f"Successfully processed: {processed} images")
-        print(f"Errors encountered: {errors} images")
-
         # Initialize YOLOv8 model
         print("\nInitializing YOLOv8 model...")
         model = create_model()
@@ -349,10 +307,6 @@ def main():
         # Determine device
         device = "0" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {'CUDA' if device == '0' else 'CPU'}")
-
-        # Create runs directory if it doesn't exist
-        runs_dir = Path("runs/detect")
-        runs_dir.mkdir(parents=True, exist_ok=True)
 
         print("\nStarting training...")
         results = model.train(
@@ -368,48 +322,36 @@ def main():
             name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",  # Run name
         )
 
-        # Run final validation and print classification report
-        print("\nRunning final validation...")
+        # Run validation
+        print("\nRunning validation...")
         val_results = model.val(data=str(data_yaml))
-        metrics = print_classification_report(val_results)
 
-        if metrics:
-            # Update model history
+        if val_results is not None:
+            metrics = {
+                "map50": float(val_results.box.map50),
+                "map50-95": float(val_results.box.map),
+                "precision": float(val_results.box.mp),
+                "recall": float(val_results.box.mr),
+            }
+
+            print("\nValidation Metrics:")
+            print(f"mAP@0.5: {metrics['map50']:.3f}")
+            print(f"mAP@0.5-0.95: {metrics['map50-95']:.3f}")
+            print(f"Precision: {metrics['precision']:.3f}")
+            print(f"Recall: {metrics['recall']:.3f}")
+
+            # Update model history with validation metrics
             best_model_path = Path(results.save_dir) / "weights/best.pt"
             history = update_model_history(str(best_model_path), metrics)
 
-            print("\nModel History Summary:")
-            print(f"Total Models Trained: {len(history['models'])}")
-            print(f"Best Model: {history['best_model']}")
-            print(f"Best Accuracy: {history['best_accuracy']:.3f}")
+            # Copy best model if it's the best so far
+            if metrics["map50"] > history.get("best_accuracy", 0):
+                print("\nNew best model! Copying to best_model.pt")
+                import shutil
 
-        print("\nTraining complete! To use the model:")
-        print(
-            """
-    from ultralytics import YOLO
-    import cv2
-    from color_enhance import enhance_traffic_colors, enhance_crosswalk
-    
-    # Load the best model
-    model = YOLO('best_model.pt')  # Always use the best performing model
-    
-    # Load and enhance image
-    image = cv2.imread('path/to/image.jpg')
-    enhanced_image = enhance_crosswalk(enhance_traffic_colors(image))
-    
-    # Predict on enhanced image
-    results = model(enhanced_image)
-    
-    # Process results
-    for r in results:
-        boxes = r.boxes  # Bounding boxes
-        for box in boxes:
-            cls = box.cls[0]  # Class index
-            conf = box.conf[0]  # Confidence score
-            class_name = ['crosswalk', 'green', 'no', 'red'][int(cls)]
-            print(f"Detected {class_name} with confidence {conf:.2f}")
-    """
-        )
+                shutil.copy(str(best_model_path), "best_model.pt")
+
+        print("\nTraining complete!")
 
     except Exception as e:
         print(f"\nError during training: {str(e)}")

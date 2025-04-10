@@ -9,7 +9,7 @@ from ultralytics import YOLO
 
 from color_enhance import enhance_crosswalk, enhance_traffic_colors
 
-# Class definitions
+# Class definitions with colors
 CLASSES = {
     0: {"name": "crosswalk", "color": (255, 0, 0)},  # Blue for crosswalk
     1: {"name": "green", "color": (0, 255, 0)},  # Green for green signal
@@ -47,6 +47,35 @@ def get_available_models():
     return models
 
 
+def preprocess_image(image, target_size=(640, 640)):
+    """Preprocess image for model input"""
+    # Convert BGR to RGB
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    # Calculate scaling factors
+    h, w = image.shape[:2]
+    scale = min(target_size[0] / w, target_size[1] / h)
+
+    # Calculate new size maintaining aspect ratio
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+
+    # Resize image
+    resized = cv2.resize(image_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    # Create canvas with padding
+    canvas = np.zeros((target_size[0], target_size[1], 3), dtype=np.uint8)
+
+    # Calculate padding
+    x_offset = (target_size[1] - new_w) // 2
+    y_offset = (target_size[0] - new_h) // 2
+
+    # Place image on canvas
+    canvas[y_offset : y_offset + new_h, x_offset : x_offset + new_w] = resized
+
+    return canvas
+
+
 def main():
     st.title("Traffic Signal and Crosswalk Detection")
 
@@ -73,6 +102,14 @@ def main():
     # Load selected model
     try:
         model = YOLO(selected_model)
+        st.sidebar.success(f"Model loaded successfully: {selected_model}")
+
+        # Show model configuration
+        if st.sidebar.checkbox("Show Model Configuration"):
+            st.sidebar.json(model.model.args)
+
+        # Add model info
+        st.sidebar.info(f"Model input size: {model.model.args['imgsz']}")
     except Exception as e:
         st.error(f"Error loading model: {str(e)}")
         return
@@ -84,7 +121,12 @@ def main():
 
     # Detection settings
     st.sidebar.header("Detection Settings")
-    conf_threshold = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
+    conf_threshold = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.1, 0.05)
+
+    # Debug options
+    st.sidebar.header("Debug Options")
+    show_debug = st.sidebar.checkbox("Show Debug Information", value=True)
+    show_preprocessing = st.sidebar.checkbox("Show Preprocessing Steps", value=True)
 
     # Image upload
     st.header("Upload Image")
@@ -95,77 +137,144 @@ def main():
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
+        if image is None:
+            st.error("Error: Could not read the uploaded image")
+            return
+
         # Display original image
         st.subheader("Original Image")
         st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
+        if show_debug:
+            st.subheader("Debug Information")
+            st.write(f"Original image shape: {image.shape}")
+            st.write(f"Model configuration:")
+            st.write(model.model.args)
 
         # Enhance image if selected
         enhanced = image.copy()
         if enhance_traffic:
             enhanced = enhance_traffic_colors(enhanced)
+            if show_preprocessing:
+                st.subheader("After Traffic Signal Enhancement")
+                st.image(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
+
         if enhance_zebra:
             enhanced = enhance_crosswalk(enhanced)
+            if show_preprocessing:
+                st.subheader("After Crosswalk Enhancement")
+                st.image(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
 
-        # Display enhanced image
-        if enhance_traffic or enhance_zebra:
-            st.subheader("Enhanced Image")
-            st.image(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
+        # Preprocess image for model
+        processed_img = preprocess_image(enhanced)
 
-        # Run detection
-        results = model(enhanced, conf=conf_threshold)
+        if show_preprocessing:
+            st.subheader("Preprocessed Image (Model Input)")
+            st.image(processed_img)
 
-        # Process and display results
-        result_image = enhanced.copy()
-        detections = []
-
-        for r in results:
-            boxes = r.boxes
-            for box in boxes:
-                # Get box coordinates
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-
-                # Get class and confidence
-                cls = int(box.cls[0])
-                conf = float(box.conf[0])
-
-                # Draw box
-                color = CLASSES[cls]["color"]
-                cv2.rectangle(result_image, (x1, y1), (x2, y2), color, 2)
-
-                # Add label
-                label = f"{CLASSES[cls]['name']} {conf:.2f}"
-                cv2.putText(
-                    result_image,
-                    label,
-                    (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    color,
-                    2,
-                )
-
-                # Store detection
-                detections.append(
-                    {
-                        "class": CLASSES[cls]["name"],
-                        "confidence": conf,
-                        "box": (x1, y1, x2, y2),
-                    }
-                )
-
-        # Display results
-        st.subheader("Detection Results")
-        st.image(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
-
-        # Display detections
-        if detections:
-            st.subheader("Detected Objects")
-            for det in detections:
+        # Run detection with additional debugging
+        try:
+            if show_debug:
+                st.write("Model input shape:", processed_img.shape)
+                st.write("Model input type:", processed_img.dtype)
                 st.write(
-                    f"- {det['class'].capitalize()} (Confidence: {det['confidence']:.2f})"
+                    "Model input range:",
+                    np.min(processed_img),
+                    "-",
+                    np.max(processed_img),
                 )
-        else:
-            st.info("No objects detected in the image.")
+
+            # Run inference
+            results = model(processed_img, conf=conf_threshold, verbose=show_debug)
+
+            if show_debug:
+                st.write("Raw model output:")
+                for i, r in enumerate(results):
+                    st.write(f"Result {i}:")
+                    st.write("- Boxes:", r.boxes)
+                    st.write(
+                        "- Shape:",
+                        r.boxes.shape if hasattr(r.boxes, "shape") else "No shape",
+                    )
+                    if len(r.boxes) > 0:
+                        st.write("- Classes:", r.boxes.cls)
+                        st.write("- Confidences:", r.boxes.conf)
+
+            # Process and display results
+            result_image = enhanced.copy()
+            detections = []
+
+            for r in results:
+                boxes = r.boxes
+
+                if show_debug:
+                    st.write(f"Processing {len(boxes)} detections")
+
+                for box in boxes:
+                    # Get box coordinates
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+                    # Get class and confidence
+                    cls = int(box.cls[0])
+                    conf = float(box.conf[0])
+
+                    if show_debug:
+                        st.write(
+                            f"Detection: Class {cls} ({CLASSES[cls]['name']}) at {conf:.2f}"
+                        )
+                        st.write(f"Box: ({x1}, {y1}), ({x2}, {y2})")
+
+                    # Draw box
+                    color = CLASSES[cls]["color"]
+                    cv2.rectangle(result_image, (x1, y1), (x2, y2), color, 2)
+
+                    # Add label
+                    label = f"{CLASSES[cls]['name']} {conf:.2f}"
+                    cv2.putText(
+                        result_image,
+                        label,
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        color,
+                        2,
+                    )
+
+                    # Store detection
+                    detections.append(
+                        {
+                            "class": CLASSES[cls]["name"],
+                            "confidence": conf,
+                            "box": (x1, y1, x2, y2),
+                        }
+                    )
+
+            # Display results
+            st.subheader("Detection Results")
+            st.image(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
+
+            # Display detections
+            if detections:
+                st.subheader("Detected Objects")
+                for det in detections:
+                    st.write(
+                        f"- {det['class'].capitalize()} (Confidence: {det['confidence']:.2f})"
+                    )
+            else:
+                st.warning("No objects detected in the image.")
+                st.info(
+                    f"Troubleshooting steps:\n"
+                    f"1. Current confidence threshold: {conf_threshold}\n"
+                    f"2. Try disabling image enhancements\n"
+                    f"3. Check if the model was trained properly\n"
+                    f"4. Verify the model weights file\n"
+                    f"5. Try retraining the model with similar images"
+                )
+
+        except Exception as e:
+            st.error(f"Error during detection: {str(e)}")
+            if show_debug:
+                st.exception(e)
 
 
 if __name__ == "__main__":
