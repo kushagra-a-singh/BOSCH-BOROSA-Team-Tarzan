@@ -447,9 +447,7 @@ def main():
             batch=batch_size,
             device=device,
             cache=True,  # Cache images for faster training
-            workers=min(
-                8, os.cpu_count() or 1
-            ),  # Number of worker threads for data loading
+            workers=min(8, os.cpu_count() or 1),  # Number of worker threads
             project="runs/detect",
             name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             pretrained=True,
@@ -460,35 +458,24 @@ def main():
             weight_decay=0.0005,
             warmup_epochs=3,
             cos_lr=True,  # Use cosine learning rate scheduler
-            mixup=0.1,
-            copy_paste=0.1,
-            degrees=5.0,
-            translate=0.1,
-            scale=0.1,
-            shear=2.0,
-            perspective=0.0003,
-            flipud=0.0,
-            fliplr=0.5,
-            mosaic=0.5,
-            hsv_h=0.015,
-            hsv_s=0.7,
-            hsv_v=0.4,
-            overlap_mask=True,
-            mask_ratio=4,
-            single_cls=False,
+            mixup=0.1,  # Mixup augmentation
+            copy_paste=0.1,  # Copy-paste augmentation
+            degrees=5.0,  # Rotation augmentation
+            translate=0.1,  # Translation augmentation
+            scale=0.1,  # Scale augmentation
+            shear=2.0,  # Shear augmentation
+            perspective=0.0003,  # Perspective augmentation
+            flipud=0.0,  # No vertical flip for traffic scenes
+            fliplr=0.5,  # Horizontal flip
+            mosaic=0.5,  # Mosaic augmentation
+            hsv_h=0.015,  # HSV hue augmentation
+            hsv_s=0.7,  # HSV saturation augmentation
+            hsv_v=0.4,  # HSV value augmentation
             rect=True,  # Enable rectangular training
-            resume=False,
-            amp=True,  # Enable automatic mixed precision
-            fraction=1.0,
-            profile=True,  # Enable performance profiling
-            multi_scale=True,  # Enable multi-scale training
-            sync_bn=(
-                True if torch.cuda.device_count() > 1 else False
-            ),  # Sync BatchNorm for multi-GPU
-            deterministic=False,  # Disable deterministic training for speed
-            close_mosaic=10,  # Disable mosaic augmentation in final epochs
+            amp=True,  # Automatic mixed precision
+            close_mosaic=10,  # Disable mosaic in last 10 epochs
             plots=False,  # Disable plotting during training
-            save_period=-1,  # Only save best and last models
+            save_period=-1,  # Save only best and last models
         )
 
         # Run validation
