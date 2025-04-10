@@ -285,7 +285,7 @@ def main():
         # Configuration
         data_dir = Path("Traffic.v3i.yolov8").resolve()  # Updated path
         data_yaml = data_dir / "data.yaml"
-        num_epochs = 100
+        num_epochs = 100  # Reduced epochs since we're using better pretrained weights
         batch_size = 16
         image_size = 640
         val_split = 0.2  # 20% for validation
@@ -300,7 +300,7 @@ def main():
         print(f"\nUpdating dataset configuration...")
         update_data_yaml(data_yaml, data_dir)
 
-        # Initialize YOLOv8 model
+        # Initialize YOLOv8 model with improved configuration
         print("\nInitializing YOLOv8 model...")
         model = create_model()
 
@@ -314,12 +314,38 @@ def main():
             epochs=num_epochs,
             imgsz=image_size,
             batch=batch_size if device == "0" else 8,  # Smaller batch size for CPU
-            patience=20,  # Early stopping patience
+            patience=20,  # Reduced patience since we're using better pretrained weights
             save=True,  # Save best model
             device=device,
             cache=True,  # Cache images for faster training
             project="runs/detect",  # Project directory
             name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",  # Run name
+            pretrained=True,  # Use pretrained weights
+            optimizer="AdamW",  # Use AdamW optimizer
+            lr0=0.0001,  # Lower initial learning rate for transfer learning
+            lrf=0.00001,  # Lower final learning rate
+            momentum=0.937,
+            weight_decay=0.0005,
+            warmup_epochs=3,  # Reduced warmup since we're using pretrained weights
+            cos_lr=True,  # Use cosine learning rate scheduler
+            mixup=0.1,  # Reduced augmentation since we have better pretrained weights
+            copy_paste=0.1,  # Reduced augmentation
+            degrees=5.0,  # Reduced rotation augmentation
+            translate=0.1,  # Reduced translation augmentation
+            scale=0.1,  # Reduced scale augmentation
+            shear=2.0,  # Reduced shear augmentation
+            perspective=0.0003,  # Reduced perspective augmentation
+            flipud=0.0,  # Disabled vertical flip as it's not realistic for traffic scenes
+            fliplr=0.5,  # Keep horizontal flip
+            mosaic=0.5,  # Reduced mosaic augmentation
+            hsv_h=0.015,  # Keep color augmentation
+            hsv_s=0.7,
+            hsv_v=0.4,
+            overlap_mask=True,  # Enable mask overlap
+            mask_ratio=4,  # Mask downsampling ratio
+            single_cls=False,  # Multiple classes
+            rect=True,  # Enable rectangular training
+            resume=False,  # Don't resume from previous training
         )
 
         # Run validation

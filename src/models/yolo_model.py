@@ -50,14 +50,12 @@ def create_model(model_path=None):
             model = YOLO(model_path)
             print(f"Loaded existing model from {model_path}")
         else:
-            # Create a new model with the following classes:
-            # 0: crosswalk
-            # 1: green (green signal)
-            # 2: no (signal off/no light)
-            # 3: red (red signal)
-            model = YOLO("yolov8n.pt")
+            # Use YOLOv8 model pretrained on MS COCO
+            model = YOLO("yolov8x.pt")  # Using YOLOv8x which was trained on MS COCO
             model.model.nc = 4  # Set number of classes
-            print("Created new YOLOv8n model with classes: crosswalk, green, no, red")
+            print(
+                "Created new YOLOv8x model (MS COCO pretrained) with classes: crosswalk, green, no, red"
+            )
 
         return model
 

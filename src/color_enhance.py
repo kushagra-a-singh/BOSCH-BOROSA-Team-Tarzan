@@ -6,7 +6,7 @@ import numpy as np
 
 def enhance_traffic_colors(image):
     """
-    Enhance traffic signal colors (red and green) in the image.
+    Enhance traffic signal colors in the image.
 
     Args:
         image: Input image in BGR format
@@ -18,37 +18,31 @@ def enhance_traffic_colors(image):
         if image is None:
             raise ValueError("Input image is None")
 
-        # Convert to HSV
+        # Convert to HSV color space
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-        # Red color range (wraps around in HSV)
-        lower_red1 = np.array([0, 100, 100])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([160, 100, 100])
-        upper_red2 = np.array([180, 255, 255])
+        # Split channels
+        h, s, v = cv2.split(hsv)
 
-        # Green color range
-        lower_green = np.array([40, 100, 100])
-        upper_green = np.array([80, 255, 255])
+        # Enhance saturation for better color detection
+        s = cv2.convertScaleAbs(s, alpha=1.3, beta=0)
 
-        # Create masks
-        red_mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        red_mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        red_mask = cv2.bitwise_or(red_mask1, red_mask2)
-        green_mask = cv2.inRange(hsv, lower_green, upper_green)
+        # Apply CLAHE to value channel for better contrast
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        v = clahe.apply(v)
 
-        # Enhance red and green regions
-        enhanced = image.copy()
+        # Merge channels
+        hsv = cv2.merge([h, s, v])
 
-        # Enhance red
-        enhanced[red_mask > 0] = [0, 0, 255]  # Pure red
+        # Convert back to BGR
+        enhanced = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
-        # Enhance green
-        enhanced[green_mask > 0] = [0, 255, 0]  # Pure green
-
-        # Apply slight sharpening
+        # Sharpen the image
         kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
         enhanced = cv2.filter2D(enhanced, -1, kernel)
+
+        # Denoise
+        enhanced = cv2.fastNlMeansDenoisingColored(enhanced, None, 10, 10, 7, 21)
 
         return enhanced
 
@@ -74,27 +68,30 @@ def enhance_crosswalk(image):
         # Convert to grayscale
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        # Apply CLAHE with stronger contrast enhancement
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
+
+        # Apply bilateral filter to reduce noise while preserving edges
+        enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)
 
         # Apply adaptive thresholding to detect zebra patterns
         thresh = cv2.adaptiveThreshold(
-            enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+            enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 2
         )
 
-        # Edge detection
-        edges = cv2.Canny(thresh, 50, 150)
+        # Edge detection with optimized parameters
+        edges = cv2.Canny(thresh, 30, 150)
 
         # Dilate edges to connect broken lines
         kernel = np.ones((3, 3), np.uint8)
-        dilated = cv2.dilate(edges, kernel, iterations=1)
+        dilated = cv2.dilate(edges, kernel, iterations=2)
 
         # Convert back to BGR
         enhanced_bgr = cv2.cvtColor(dilated, cv2.COLOR_GRAY2BGR)
 
-        # Blend with original image
-        result = cv2.addWeighted(image, 0.7, enhanced_bgr, 0.3, 0)
+        # Blend with original image with adjusted weights
+        result = cv2.addWeighted(image, 0.6, enhanced_bgr, 0.4, 0)
 
         # Apply sharpening
         kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])

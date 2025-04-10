@@ -11,5 +11,5 @@ roboflow:
   version: 3
   workspace: borosa
 test: D:\Kushagra\Programming\Borosa\Traffic.v3i.yolov8\test\images
-train: C:\Users\bhate\Documents\BOROSA\Traffic.v3i.yolov8\train\images
-val: C:\Users\bhate\Documents\BOROSA\Traffic.v3i.yolov8\train\images
+train: D:\Kushagra\Programming\Borosa\Traffic.v3i.yolov8\train\images
+val: D:\Kushagra\Programming\Borosa\Traffic.v3i.yolov8\valid\images
