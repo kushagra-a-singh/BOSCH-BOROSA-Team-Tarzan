@@ -285,7 +285,7 @@ def main():
         # Configuration
         data_dir = Path("Traffic.v3i.yolov8").resolve()
         data_yaml = data_dir / "data.yaml"
-        num_epochs = 100
+        num_epochs = 300
         batch_size = 16
         image_size = 640
         val_split = 0.2  # 20% for validation
