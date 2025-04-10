@@ -1,5 +1,7 @@
 import json
 import os
+import random
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -50,8 +52,6 @@ def update_model_history(model_path, metrics):
         # Copy best weights to a consistent location
         best_weights = Path("best_model.pt")
         if Path(model_path).exists():
-            import shutil
-
             shutil.copy2(model_path, best_weights)
             print(f"\nNew best model saved to {best_weights}")
 
@@ -265,6 +265,64 @@ def prepare_enhanced_dataset(data_dir):
         raise
 
 
+def split_dataset(data_dir):
+    """
+    Split dataset into train, validation, and test sets.
+    Train: 190 images
+    Validation: 31 images
+    Test: 30 images
+    """
+    data_dir = Path(data_dir)
+    train_dir = data_dir / "train"
+    valid_dir = data_dir / "valid"
+    test_dir = data_dir / "test"
+
+    # Create directories if they don't exist
+    for dir_path in [train_dir, valid_dir, test_dir]:
+        (dir_path / "images").mkdir(parents=True, exist_ok=True)
+        (dir_path / "labels").mkdir(parents=True, exist_ok=True)
+
+    # Get all image and label files
+    source_images_dir = data_dir / "train/images"
+    source_labels_dir = data_dir / "train/labels"
+
+    image_files = sorted(list(source_images_dir.glob("*.[jJ][pP][gG]")))
+    label_files = sorted(list(source_labels_dir.glob("*.txt")))
+
+    # Set random seed for reproducibility
+    random.seed(42)
+
+    # Shuffle files while keeping image-label pairs together
+    paired_files = list(zip(image_files, label_files))
+    random.shuffle(paired_files)
+
+    # Split according to specified sizes
+    train_pairs = paired_files[:190]
+    valid_pairs = paired_files[190:221]  # Next 31 images
+    test_pairs = paired_files[221:251]  # Last 30 images
+
+    # Function to move files
+    def move_pairs(pairs, target_dir):
+        for img_path, label_path in pairs:
+            # Move image
+            shutil.copy2(str(img_path), str(target_dir / "images" / img_path.name))
+            # Move corresponding label
+            shutil.copy2(str(label_path), str(target_dir / "labels" / label_path.name))
+
+    # Move files to respective directories
+    print("\nSplitting dataset...")
+    print(f"Moving {len(train_pairs)} files to training set")
+    move_pairs(train_pairs, train_dir)
+
+    print(f"Moving {len(valid_pairs)} files to validation set")
+    move_pairs(valid_pairs, valid_dir)
+
+    print(f"Moving {len(test_pairs)} files to test set")
+    move_pairs(test_pairs, test_dir)
+
+    return train_dir, valid_dir, test_dir
+
+
 def update_data_yaml(data_yaml_path, data_dir):
     """Update data.yaml with absolute paths"""
     with open(data_yaml_path) as f:
@@ -273,7 +331,8 @@ def update_data_yaml(data_yaml_path, data_dir):
     # Update paths to absolute paths
     data_dir = Path(data_dir).resolve()
     data["train"] = str(data_dir / "train/images")
-    data["val"] = str(data_dir / "train/images")  # Use same directory for validation
+    data["val"] = str(data_dir / "valid/images")  # Use separate validation directory
+    data["test"] = str(data_dir / "test/images")  # Add test directory
 
     # Save updated yaml
     with open(data_yaml_path, "w") as f:
@@ -288,13 +347,16 @@ def main():
         num_epochs = 100  # Reduced epochs since we're using better pretrained weights
         batch_size = 16
         image_size = 640
-        val_split = 0.2  # 20% for validation
 
         # Verify dataset exists
         if not data_dir.exists():
             raise ValueError(f"Dataset directory not found: {data_dir}")
         if not data_yaml.exists():
             raise ValueError(f"Dataset configuration not found: {data_yaml}")
+
+        # Split dataset into train, validation, and test sets
+        print("\nSplitting dataset into train, validation, and test sets...")
+        train_dir, valid_dir, test_dir = split_dataset(data_dir)
 
         # Update data.yaml with absolute paths
         print(f"\nUpdating dataset configuration...")
@@ -373,8 +435,6 @@ def main():
             # Copy best model if it's the best so far
             if metrics["map50"] > history.get("best_accuracy", 0):
                 print("\nNew best model! Copying to best_model.pt")
-                import shutil
-
                 shutil.copy(str(best_model_path), "best_model.pt")
 
         print("\nTraining complete!")
