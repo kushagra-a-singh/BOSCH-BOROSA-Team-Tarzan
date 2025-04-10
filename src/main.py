@@ -272,6 +272,10 @@ def split_dataset(data_dir):
     Validation: 31 images
     Test: 30 images
     """
+    import gc
+    import os
+    import time
+
     data_dir = Path(data_dir)
     train_dir = data_dir / "train"
     valid_dir = data_dir / "valid"
@@ -286,8 +290,29 @@ def split_dataset(data_dir):
     source_images_dir = data_dir / "train/images"
     source_labels_dir = data_dir / "train/labels"
 
-    image_files = sorted(list(source_images_dir.glob("*.[jJ][pP][gG]")))
-    label_files = sorted(list(source_labels_dir.glob("*.txt")))
+    # Create temporary directory to store original files
+    temp_dir = data_dir / "temp"
+    temp_images_dir = temp_dir / "images"
+    temp_labels_dir = temp_dir / "labels"
+
+    print("\nCreating temporary backup of original files...")
+    temp_images_dir.mkdir(parents=True, exist_ok=True)
+    temp_labels_dir.mkdir(parents=True, exist_ok=True)
+
+    # First, move all files to temporary directory
+    for file in source_images_dir.glob("*.[jJ][pP][gG]"):
+        shutil.move(str(file), str(temp_images_dir / file.name))
+    for file in source_labels_dir.glob("*.txt"):
+        shutil.move(str(file), str(temp_labels_dir / file.name))
+
+    # Get sorted lists of files from temporary directory
+    image_files = sorted(list(temp_images_dir.glob("*.[jJ][pP][gG]")))
+    label_files = sorted(list(temp_labels_dir.glob("*.txt")))
+
+    if not image_files:
+        raise ValueError(f"No images found in {temp_images_dir}")
+
+    print(f"\nFound {len(image_files)} images and {len(label_files)} labels")
 
     # Set random seed for reproducibility
     random.seed(42)
@@ -301,24 +326,52 @@ def split_dataset(data_dir):
     valid_pairs = paired_files[190:221]  # Next 31 images
     test_pairs = paired_files[221:251]  # Last 30 images
 
-    # Function to move files
-    def move_pairs(pairs, target_dir):
+    def move_files(pairs, target_dir):
+        """Move files from temp directory to target directory"""
+        successful = 0
+        failed = 0
         for img_path, label_path in pairs:
-            # Move image
-            shutil.copy2(str(img_path), str(target_dir / "images" / img_path.name))
-            # Move corresponding label
-            shutil.copy2(str(label_path), str(target_dir / "labels" / label_path.name))
+            try:
+                # Move image
+                shutil.move(str(img_path), str(target_dir / "images" / img_path.name))
+                # Move corresponding label
+                shutil.move(
+                    str(label_path), str(target_dir / "labels" / label_path.name)
+                )
+                successful += 1
+                print(f"Moved: {img_path.name}")
+            except Exception as e:
+                print(f"Error moving {img_path.name}: {e}")
+                failed += 1
+        return successful, failed
 
     # Move files to respective directories
     print("\nSplitting dataset...")
-    print(f"Moving {len(train_pairs)} files to training set")
-    move_pairs(train_pairs, train_dir)
 
-    print(f"Moving {len(valid_pairs)} files to validation set")
-    move_pairs(valid_pairs, valid_dir)
+    print(f"\nMoving files to training set ({len(train_pairs)} files)")
+    train_success, train_failed = move_files(train_pairs, train_dir)
+    print(f"Training set: {train_success} successful, {train_failed} failed")
 
-    print(f"Moving {len(test_pairs)} files to test set")
-    move_pairs(test_pairs, test_dir)
+    print(f"\nMoving files to validation set ({len(valid_pairs)} files)")
+    val_success, val_failed = move_files(valid_pairs, valid_dir)
+    print(f"Validation set: {val_success} successful, {val_failed} failed")
+
+    print(f"\nMoving files to test set ({len(test_pairs)} files)")
+    test_success, test_failed = move_files(test_pairs, test_dir)
+    print(f"Test set: {test_success} successful, {test_failed} failed")
+
+    # Clean up temporary directory
+    try:
+        shutil.rmtree(temp_dir)
+    except Exception as e:
+        print(f"Warning: Could not remove temporary directory: {e}")
+
+    total_failed = train_failed + val_failed + test_failed
+    if total_failed > 0:
+        print(f"\nError: {total_failed} files could not be moved.")
+        raise RuntimeError(
+            f"Dataset split incomplete: {total_failed} files could not be moved"
+        )
 
     return train_dir, valid_dir, test_dir
 
