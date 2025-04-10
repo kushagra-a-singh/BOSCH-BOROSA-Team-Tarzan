@@ -395,11 +395,31 @@ def update_data_yaml(data_yaml_path, data_dir):
 def main():
     try:
         # Configuration
-        data_dir = Path("Traffic.v3i.yolov8").resolve()  # Updated path
+        data_dir = Path("Traffic.v3i.yolov8").resolve()
         data_yaml = data_dir / "data.yaml"
-        num_epochs = 100  # Reduced epochs since we're using better pretrained weights
-        batch_size = 16
-        image_size = 640
+        num_epochs = 100
+
+        # Determine device and optimize batch size
+        device = "0" if torch.cuda.is_available() else "cpu"
+        if device == "0":
+            # Get GPU memory in GB
+            gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
+            # Adjust batch size based on GPU memory
+            if gpu_mem >= 8:  # For GPUs with 8GB or more
+                batch_size = 32
+            elif gpu_mem >= 6:  # For GPUs with 6-8GB
+                batch_size = 24
+            else:  # For GPUs with less than 6GB
+                batch_size = 16
+        else:
+            batch_size = 8  # For CPU
+
+        image_size = 640  # Standard YOLO input size
+
+        print(f"\nUsing device: {'CUDA' if device == '0' else 'CPU'}")
+        if device == "0":
+            print(f"GPU Memory: {gpu_mem:.1f}GB")
+            print(f"Batch size: {batch_size}")
 
         # Verify dataset exists
         if not data_dir.exists():
@@ -419,48 +439,56 @@ def main():
         print("\nInitializing YOLOv8 model...")
         model = create_model()
 
-        # Determine device
-        device = "0" if torch.cuda.is_available() else "cpu"
-        print(f"Using device: {'CUDA' if device == '0' else 'CPU'}")
-
         print("\nStarting training...")
         results = model.train(
             data=str(data_yaml),
             epochs=num_epochs,
             imgsz=image_size,
-            batch=batch_size if device == "0" else 8,  # Smaller batch size for CPU
-            patience=20,  # Reduced patience since we're using better pretrained weights
-            save=True,  # Save best model
+            batch=batch_size,
             device=device,
             cache=True,  # Cache images for faster training
-            project="runs/detect",  # Project directory
-            name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",  # Run name
-            pretrained=True,  # Use pretrained weights
+            workers=min(
+                8, os.cpu_count() or 1
+            ),  # Number of worker threads for data loading
+            project="runs/detect",
+            name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            pretrained=True,
             optimizer="AdamW",  # Use AdamW optimizer
-            lr0=0.0001,  # Lower initial learning rate for transfer learning
-            lrf=0.00001,  # Lower final learning rate
+            lr0=0.001,  # Initial learning rate
+            lrf=0.0001,  # Final learning rate
             momentum=0.937,
             weight_decay=0.0005,
-            warmup_epochs=3,  # Reduced warmup since we're using pretrained weights
+            warmup_epochs=3,
             cos_lr=True,  # Use cosine learning rate scheduler
-            mixup=0.1,  # Reduced augmentation since we have better pretrained weights
-            copy_paste=0.1,  # Reduced augmentation
-            degrees=5.0,  # Reduced rotation augmentation
-            translate=0.1,  # Reduced translation augmentation
-            scale=0.1,  # Reduced scale augmentation
-            shear=2.0,  # Reduced shear augmentation
-            perspective=0.0003,  # Reduced perspective augmentation
-            flipud=0.0,  # Disabled vertical flip as it's not realistic for traffic scenes
-            fliplr=0.5,  # Keep horizontal flip
-            mosaic=0.5,  # Reduced mosaic augmentation
-            hsv_h=0.015,  # Keep color augmentation
+            mixup=0.1,
+            copy_paste=0.1,
+            degrees=5.0,
+            translate=0.1,
+            scale=0.1,
+            shear=2.0,
+            perspective=0.0003,
+            flipud=0.0,
+            fliplr=0.5,
+            mosaic=0.5,
+            hsv_h=0.015,
             hsv_s=0.7,
             hsv_v=0.4,
-            overlap_mask=True,  # Enable mask overlap
-            mask_ratio=4,  # Mask downsampling ratio
-            single_cls=False,  # Multiple classes
+            overlap_mask=True,
+            mask_ratio=4,
+            single_cls=False,
             rect=True,  # Enable rectangular training
-            resume=False,  # Don't resume from previous training
+            resume=False,
+            amp=True,  # Enable automatic mixed precision
+            fraction=1.0,
+            profile=True,  # Enable performance profiling
+            multi_scale=True,  # Enable multi-scale training
+            sync_bn=(
+                True if torch.cuda.device_count() > 1 else False
+            ),  # Sync BatchNorm for multi-GPU
+            deterministic=False,  # Disable deterministic training for speed
+            close_mosaic=10,  # Disable mosaic augmentation in final epochs
+            plots=False,  # Disable plotting during training
+            save_period=-1,  # Only save best and last models
         )
 
         # Run validation
