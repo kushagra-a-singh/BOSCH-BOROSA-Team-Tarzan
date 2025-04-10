@@ -1,0 +1,30 @@
+{
+    "models": [
+        {
+            "path": "runs\\detect\\runs\\detect\\train_20250410_132300\\weights\\best.pt",
+            "timestamp": "2025-04-10T13:27:21.355652",
+            "metrics": {
+                "accuracy": 0.777913,
+                "map50": 0.995,
+                "precision": 0.9573536415386219,
+                "recall": 1.0,
+                "class_metrics": {
+                    "crosswalk": {
+                        "precision": 0.9734591809652627,
+                        "recall": 1.0,
+                        "map50": 0.995,
+                        "map": 0.7901900000000002
+                    },
+                    "traffic_signal": {
+                        "precision": 0.9412481021119812,
+                        "recall": 1.0,
+                        "map50": 0.995,
+                        "map": 0.765636
+                    }
+                }
+            }
+        }
+    ],
+    "best_model": "runs\\detect\\runs\\detect\\train_20250410_132300\\weights\\best.pt",
+    "best_accuracy": 0.777913
+}

@@ -1,0 +1,15 @@
+names:
+- crosswalk
+- green
+- 'no'
+- red
+nc: 4
+roboflow:
+  license: CC BY 4.0
+  project: traffic-gnknb
+  url: https://universe.roboflow.com/borosa/traffic-gnknb/dataset/3
+  version: 3
+  workspace: borosa
+test: D:\Kushagra\Programming\Borosa\Traffic.v3i.yolov8\test\images
+train: D:\Kushagra\Programming\Borosa\Traffic.v3i.yolov8\train\images
+val: D:\Kushagra\Programming\Borosa\Traffic.v3i.yolov8\train\images
