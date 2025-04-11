@@ -1,6 +1,9 @@
 import base64
 import json
 import os
+import time
+from datetime import datetime
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -10,73 +13,451 @@ from inference_sdk import InferenceHTTPClient
 # Load environment variables
 load_dotenv()
 
-# Initialize the client with environment variables
+# Configuration
+SAVE_DETECTIONS = os.getenv("SAVE_DETECTIONS", "false").lower() == "true"
+DETECTION_DIR = "detections"
+TEMP_DIR = "temp"
+
+# Create directories if saving is enabled
+if SAVE_DETECTIONS:
+    os.makedirs(DETECTION_DIR, exist_ok=True)
+    # Create subdirectories for each class
+    for class_name in ["red", "green", "crosswalk", "no", "multiple"]:
+        os.makedirs(os.path.join(DETECTION_DIR, class_name), exist_ok=True)
+
+# Create temp directory
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Initialize the Roboflow client
 client = InferenceHTTPClient(
     api_url=os.getenv("ROBOFLOW_API_URL", "https://detect.roboflow.com"),
-    api_key=os.getenv("ROBOFLOW_API_KEY", "fGEsh6hVqfY168zf0CBs"),
+    api_key=os.getenv("ROBOFLOW_API_KEY"),
 )
 
-# Image path using proper path handling
-image_path = os.path.join(
-    "Traffic.v3i.yolov8",
-    "train",
-    "images",
-    "captured_20250402_174103_jpg.rf.0dd1b4a3178fa42ad542b12a0eee5fc2.jpg",
-)
+# Communication Configuration
+ENABLE_MQTT = os.getenv("ENABLE_MQTT", "false").lower() == "true"
+ENABLE_HTTP = os.getenv("ENABLE_HTTP", "false").lower() == "true"
 
-# Ensure the image file exists
-if not os.path.exists(image_path):
-    raise FileNotFoundError(f"Image file not found: {image_path}")
+mqtt_client = None
+if ENABLE_MQTT:
+    try:
+        import paho.mqtt.client as mqtt
 
-# Read the image
-image = cv2.imread(image_path)
-if image is None:
-    raise ValueError(f"Failed to read image: {image_path}")
+        MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
+        MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+        MQTT_TOPIC = "traffic/detection"
 
-try:
-    # Get predictions and visualization in one call
-    result = client.run_workflow(
-        workspace_name="borosa",
-        workflow_id="detect-count-and-visualize",
-        images={"image": image_path},
-        use_cache=True,
-    )
+        mqtt_client = mqtt.Client()
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+        print("MQTT connection successful")
+    except Exception as e:
+        print(f"MQTT setup skipped: {e}")
+        mqtt_client = None
 
-    if result and len(result) > 0:
-        predictions = result[0].get("predictions", {})
-        if "predictions" in predictions:
-            detections = predictions["predictions"]
-            print("\nDetection Results:")
-            print(f"Number of objects detected: {len(detections)}")
-            print("\nDetailed Predictions:")
 
-            # Sort detections by confidence
-            detections.sort(key=lambda x: x["confidence"], reverse=True)
+def send_control_commands(action, buzzer):
+    """Send control commands via enabled communication channels"""
+    # Prepare control message for MQTT
+    control_message = {"action": action, "buzzer": buzzer, "timestamp": time.time()}
 
-            for pred in detections:
-                print(f"Class: {pred['class']}")
-                print(f"Confidence: {pred['confidence']:.2%}")
-                print(f"Location: x={pred['x']:.1f}, y={pred['y']:.1f}")
-                print(f"Size: width={pred['width']:.1f}, height={pred['height']:.1f}")
-                print("-" * 40)
+    # Send via MQTT if enabled and available
+    if ENABLE_MQTT and mqtt_client:
+        try:
+            mqtt_client.publish(MQTT_TOPIC, json.dumps(control_message))
+            print("[MQTT] Command sent successfully")
+        except Exception as e:
+            print(f"[MQTT] Send failed: {e}")
 
-            # Print image dimensions
-            if "image" in predictions:
-                img_info = predictions["image"]
+    # Send movement commands via HTTP
+    try:
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504]
+        )
+
+        session = requests.Session()
+        session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+
+        base_url = "http://192.168.125.246"
+
+        # Updated endpoint mapping with control parameter
+        if action == "GO":
+            endpoint = "/backward"  # Changed to use control endpoint
+        else:  # SLOW or any other case
+            endpoint = "/stop"  # Changed to use control endpoint
+
+        movement_url = f"{base_url}{endpoint}"
+
+        try:
+            # Make GET request with longer timeout
+            response = session.get(movement_url, timeout=5)
+            print(
+                f"[Movement] Command sent to {movement_url}, status: {response.status_code}"
+            )
+
+            if response.status_code not in [200, 201, 202]:
                 print(
-                    f"\nImage Dimensions: {img_info['width']}x{img_info['height']} pixels"
+                    f"[Movement] Warning: Unexpected status code {response.status_code}"
+                )
+                # Try alternative format if 404
+                if response.status_code == 404:
+                    alt_url = f"{base_url}" + (
+                        "backward" if action == "GO" else "stop"
+                    )
+                    print(f"[Movement] Trying alternative URL: {alt_url}")
+                    response = session.get(alt_url, timeout=5)
+                    response = session.get(alt_url, timeout=5)
+                    print(
+                        f"[Movement] Alternative request status: {response.status_code}"
+                    )
+
+        except requests.exceptions.Timeout:
+            print(f"[Movement] Command timed out. Device might be busy or unreachable.")
+        except requests.exceptions.ConnectionError:
+            print(
+                f"[Movement] Connection failed. Please verify the device is powered on and connected."
+            )
+        except Exception as e:
+            print(f"[Movement] Command failed: {str(e)}")
+        finally:
+            session.close()
+
+        # Send additional control commands if HTTP control is enabled
+        if ENABLE_HTTP:
+            try:
+                POD_API_URL = os.getenv("POD_API_URL", "http://localhost:5000/control")
+                response = requests.post(POD_API_URL, json=control_message, timeout=3)
+                print(f"[HTTP] Control command sent, status: {response.status_code}")
+            except Exception as e:
+                print(f"[HTTP] Control command failed: {e}")
+
+    except ImportError:
+        print("[Movement] Requests library not available for HTTP commands")
+
+
+def process_detection(predictions):
+    """Process detections and determine action"""
+    if not predictions:
+        return "SLOW", False  # Default to SLOW (stop) for safety
+
+    # Initialize variables
+    detected_no = False
+    highest_confidence = 0
+    action = "SLOW"  # Default to SLOW (stop)
+    buzzer = False
+
+    # Process each detection
+    for pred in predictions:
+        class_name = pred["class"].lower()
+        confidence = pred["confidence"]
+
+        print(
+            f"[DEBUG] Detected {class_name} with confidence {confidence}"
+        )  # Debug line
+
+        if confidence > highest_confidence:
+            highest_confidence = confidence
+
+        # Check for 'no' signal with confidence threshold
+        if class_name == "no" and confidence > 0.4:  # Using same threshold as before
+            detected_no = True
+            print("[DEBUG] Detected 'no' signal")
+
+    # Simplified decision logic - GO on 'no', SLOW otherwise
+    if detected_no:
+        action = "GO"
+        buzzer = False
+        print("[DEBUG] Setting action to GO due to 'no' signal")
+    else:
+        action = "SLOW"
+        buzzer = False
+
+    print(f"[DEBUG] Final action decided: {action}")
+    return action, buzzer
+
+
+def save_detection_frame(frame, predictions, action):
+    """Save frame with detections if enabled"""
+    if not SAVE_DETECTIONS or not predictions:
+        return
+
+    # Determine directory based on detections
+    if len(predictions) > 1:
+        save_dir = "multiple"
+    else:
+        save_dir = predictions[0]["class"].lower()
+
+    # Create filename with timestamp and action
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    confidence = max(pred["confidence"] for pred in predictions)
+    filename = f"{timestamp}_{action}_{confidence:.2f}.jpg"
+
+    # Full path for saving
+    save_path = os.path.join(DETECTION_DIR, save_dir, filename)
+
+    # Save the frame
+    cv2.imwrite(save_path, frame)
+    print(f"[SAVE] Frame saved: {save_path}")
+
+
+def main():
+    print("\n=== Traffic Detection System ===")
+    print("System Configuration:")
+    print(f"- MQTT Enabled: {ENABLE_MQTT}")
+    print(f"- HTTP Enabled: {ENABLE_HTTP}")
+    print(f"- Save Detections: {SAVE_DETECTIONS}")
+    if SAVE_DETECTIONS:
+        print(f"- Save Directory: {os.path.abspath(DETECTION_DIR)}")
+    print("\nInitializing camera stream...")
+
+    # IP Camera stream URL
+    stream_url = "http://192.168.125.246:81/stream"
+    print(f"Connecting to stream: {stream_url}")
+
+    def init_camera():
+        try:
+            # First try to ping the device
+            import requests
+
+            response = requests.get(f"http://192.168.125.246/status", timeout=2)
+            if response.status_code != 200:
+                print("Warning: Device status check failed")
+        except:
+            print("Warning: Could not check device status")
+
+        cap = cv2.VideoCapture(
+            stream_url, cv2.CAP_FFMPEG
+        )  # Explicitly use FFMPEG backend
+        if cap.isOpened():
+            # Set OpenCV capture properties for better streaming
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)  # Increased buffer size slightly
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FPS, 10)  # Reduced FPS further for stability
+            # Set timeouts
+            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)  # 5 second timeout
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)  # 5 second read timeout
+        return cap
+
+    # Initialize video capture with IP camera stream
+    cap = init_camera()
+    reconnect_delay = 2  # Initial delay between reconnection attempts
+    max_reconnect_delay = 30  # Maximum delay between attempts
+    reconnect_attempts = 0
+    max_reconnect_attempts = 10
+
+    if not cap.isOpened():
+        print("Error: Could not connect to IP camera stream")
+        print("Please check:")
+        print("1. Device is powered on")
+        print("2. Device IP address is correct (192.168.125.246)")
+        print("3. Device is connected to the network")
+        print("4. No firewall is blocking the connection")
+        return
+
+    print("Camera stream initialized successfully")
+    print("Press 'q' to quit")
+
+    last_process_time = 0
+    process_interval = 5.0  # Changed from 3 to 5 seconds
+    is_processing = False
+    last_action = "SLOW"  # Default action
+    last_predictions = []
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print(
+                    f"\nError: Could not read frame from stream (Attempt {reconnect_attempts + 1}/{max_reconnect_attempts})"
+                )
+                reconnect_attempts += 1
+
+                if reconnect_attempts >= max_reconnect_attempts:
+                    print("Max reconnection attempts reached. Exiting...")
+                    break
+
+                print(f"Waiting {reconnect_delay} seconds before reconnecting...")
+                time.sleep(reconnect_delay)
+
+                # Increase delay for next attempt (exponential backoff)
+                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
+
+                # Close current connection
+                cap.release()
+                cv2.destroyAllWindows()
+
+                print("Attempting to reconnect to stream...")
+                cap = init_camera()
+
+                if cap.isOpened():
+                    print("Successfully reconnected to stream")
+                    reconnect_attempts = 0
+                    reconnect_delay = 2  # Reset delay on successful connection
+                continue
+
+            # Reset reconnect attempts and delay on successful frame read
+            if reconnect_attempts > 0:
+                print("Stream connection restored")
+                reconnect_attempts = 0
+                reconnect_delay = 2
+
+            current_time = time.time()
+            frame_display = frame.copy()
+
+            # Draw last known detections
+            for pred in last_predictions:
+                x = pred["x"]
+                y = pred["y"]
+                width = pred["width"]
+                height = pred["height"]
+
+                x1 = int(x - width / 2)
+                y1 = int(y - height / 2)
+                x2 = int(x + width / 2)
+                y2 = int(y + height / 2)
+
+                # Draw rectangle with color based on class
+                color = (0, 255, 0)  # Default green
+                if pred["class"].lower() == "red":
+                    color = (0, 0, 255)  # Red
+                elif pred["class"].lower() == "crosswalk":
+                    color = (255, 0, 0)  # Blue
+
+                cv2.rectangle(frame_display, (x1, y1), (x2, y2), color, 2)
+
+                # Add label
+                label = f"{pred['class']} {pred['confidence']:.2f}"
+                cv2.putText(
+                    frame_display,
+                    label,
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    2,
                 )
 
-        # Save the output image if available
-        if "output_image" in result[0]:
-            img_data = base64.b64decode(result[0]["output_image"])
-            output_path = "detection_result.jpg"
-            with open(output_path, "wb") as f:
-                f.write(img_data)
-            print(f"\nOutput image saved as: {output_path}")
+            # Add status overlay
+            status_text = f"Status: {'Processing' if is_processing else 'Monitoring'}"
+            action_text = f"Action: {last_action}"
+            time_to_next = max(0, process_interval - (current_time - last_process_time))
+            timer_text = f"Next update in: {time_to_next:.1f}s"
+            stream_text = "Stream: Connected"
 
-except Exception as e:
-    print(f"Error during inference: {str(e)}")
-    if "result" in locals():
-        print("\nFull response:")
-        print(json.dumps(result, indent=2))
+            # Draw status information
+            cv2.putText(
+                frame_display,
+                status_text,
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2,
+            )
+            cv2.putText(
+                frame_display,
+                action_text,
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2,
+            )
+            cv2.putText(
+                frame_display,
+                timer_text,
+                (10, 90),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2,
+            )
+            cv2.putText(
+                frame_display,
+                stream_text,
+                (10, 120),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2,
+            )
+
+            # Process frame every interval
+            if current_time - last_process_time >= process_interval:
+                is_processing = True
+                print("\n--- Processing frame ---")
+
+                # Save frame temporarily
+                temp_path = os.path.join(TEMP_DIR, "temp_frame.jpg")
+                cv2.imwrite(temp_path, frame)
+
+                try:
+                    # Get predictions from Roboflow
+                    result = client.run_workflow(
+                        workspace_name="borosa",
+                        workflow_id="detect-count-and-visualize",
+                        images={"image": temp_path},
+                        use_cache=True,
+                    )
+
+                    if result and len(result) > 0:
+                        predictions = (
+                            result[0].get("predictions", {}).get("predictions", [])
+                        )
+                        last_predictions = predictions
+
+                        # Process detections and get action
+                        action, buzzer = process_detection(predictions)
+                        last_action = action
+
+                        # Save frame if there are detections
+                        if predictions:
+                            save_detection_frame(frame_display, predictions, action)
+
+                        # Send control commands
+                        send_control_commands(action, buzzer)
+
+                        # Display results
+                        print(f"Detection Results:")
+                        print(f"- Action: {action}")
+                        print(f"- Buzzer: {buzzer}")
+                        print(f"- Objects detected: {len(predictions)}")
+                        for pred in predictions:
+                            print(f"  * {pred['class']}: {pred['confidence']:.2f}")
+
+                except Exception as e:
+                    print(f"Error processing frame: {e}")
+
+                finally:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                    is_processing = False
+                    last_process_time = current_time
+
+            # Display the frame
+            cv2.imshow("Traffic Detection", frame_display)
+
+            # Break loop on 'q' press
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                print("\nQuitting...")
+                break
+
+    except Exception as e:
+        print(f"\nError in main loop: {e}")
+
+    finally:
+        print("\nCleaning up...")
+        cap.release()
+        cv2.destroyAllWindows()
+        if mqtt_client:
+            mqtt_client.loop_stop()
+            mqtt_client.disconnect()
+
+
+if __name__ == "__main__":
+    main()
