@@ -1,7 +1,9 @@
 import base64
 import json
 import os
+import threading
 import time
+import winsound  # For buzzer sound
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +19,11 @@ load_dotenv()
 SAVE_DETECTIONS = os.getenv("SAVE_DETECTIONS", "false").lower() == "true"
 DETECTION_DIR = "detections"
 TEMP_DIR = "temp"
+
+# Buzzer configuration
+BUZZER_FREQUENCY = 1000  # Hz
+BUZZER_DURATION_SELECTED = 2000  # 2 seconds in milliseconds
+BUZZER_DURATION_DETECTED = 5000  # 5 seconds in milliseconds
 
 # Create directories if saving is enabled
 if SAVE_DETECTIONS:
@@ -56,10 +63,24 @@ if ENABLE_MQTT:
         mqtt_client = None
 
 
+def play_buzzer(duration_ms):
+    """Play buzzer sound for specified duration in a separate thread"""
+
+    def buzzer_thread():
+        winsound.Beep(BUZZER_FREQUENCY, duration_ms)
+
+    # Start buzzer in a separate thread to avoid blocking
+    threading.Thread(target=buzzer_thread).start()
+
+
 def send_control_commands(action, buzzer):
     """Send control commands via enabled communication channels"""
     # Prepare control message for MQTT
     control_message = {"action": action, "buzzer": buzzer, "timestamp": time.time()}
+
+    # Play buzzer for 2 seconds when action is selected
+    if action == "GO":
+        play_buzzer(BUZZER_DURATION_SELECTED)
 
     # Send via MQTT if enabled and available
     if ENABLE_MQTT and mqtt_client:
@@ -152,6 +173,7 @@ def process_detection(predictions):
 
     # Initialize variables
     detected_green = False
+    detected_red = False
     highest_confidence = 0
     action = "SLOW"  # Default to SLOW (stop)
     buzzer = False
@@ -169,14 +191,23 @@ def process_detection(predictions):
             highest_confidence = confidence
 
         # Check for green signal with lower confidence threshold
-        if class_name == "green" and confidence > 0.1:  # Changed from 0.4 to 0.10
+        if class_name == "green" and confidence > 0.10:  # Using 0.10 threshold
             detected_green = True
             print("[DEBUG] Detected green signal")
+            # Play buzzer for 2 seconds when green is detected
+            play_buzzer(BUZZER_DURATION_SELECTED)
+
+        # Check for red signal
+        if class_name == "red" and confidence > 0.10:
+            detected_red = True
+            print("[DEBUG] Detected red signal")
+            # Play buzzer for 5 seconds when red is detected
+            play_buzzer(BUZZER_DURATION_DETECTED)
 
     # Simplified decision logic - GO on green, SLOW otherwise
     if detected_green:
         action = "GO"  # This will trigger backward movement in send_control_commands
-        buzzer = False
+        buzzer = True
         print("[DEBUG] Setting action to GO due to green signal")
     else:
         action = "SLOW"
