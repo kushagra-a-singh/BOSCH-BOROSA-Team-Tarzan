@@ -75,57 +75,62 @@ def send_control_commands(action, buzzer):
         from requests.adapters import HTTPAdapter
         from urllib3.util.retry import Retry
 
-        # Configure retry strategy
-        retry_strategy = Retry(
-            total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504]
-        )
-
         session = requests.Session()
-        session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
-
         base_url = "http://192.168.125.246"
 
-        # Updated endpoint mapping with control parameter
+        # Complete endpoint mapping for all movements
         if action == "GO":
-            endpoint = "/backward"  # Changed to use control endpoint
+            endpoint = "/backward"  # When 'no' is detected
+        elif action == "FORWARD":
+            endpoint = "/forward"  # When explicitly requested to go forward
         else:  # SLOW or any other case
-            endpoint = "/stop"  # Changed to use control endpoint
+            endpoint = "/stop"
 
         movement_url = f"{base_url}{endpoint}"
+        max_retries = 3
+        current_retry = 0
+        success = False
 
-        try:
-            # Make GET request with longer timeout
-            response = session.get(movement_url, timeout=5)
-            print(
-                f"[Movement] Command sent to {movement_url}, status: {response.status_code}"
-            )
-
-            if response.status_code not in [200, 201, 202]:
+        while current_retry < max_retries and not success:
+            try:
+                current_retry += 1
+                print(f"[Movement] Attempt {current_retry}/{max_retries}")
+                response = session.get(movement_url, timeout=5)
                 print(
-                    f"[Movement] Warning: Unexpected status code {response.status_code}"
+                    f"[Movement] Command sent to {movement_url}, status: {response.status_code}"
                 )
-                # Try alternative format if 404
-                if response.status_code == 404:
-                    alt_url = f"{base_url}" + (
-                        "backward" if action == "GO" else "stop"
-                    )
-                    print(f"[Movement] Trying alternative URL: {alt_url}")
-                    response = session.get(alt_url, timeout=5)
-                    response = session.get(alt_url, timeout=5)
-                    print(
-                        f"[Movement] Alternative request status: {response.status_code}"
-                    )
 
-        except requests.exceptions.Timeout:
-            print(f"[Movement] Command timed out. Device might be busy or unreachable.")
-        except requests.exceptions.ConnectionError:
-            print(
-                f"[Movement] Connection failed. Please verify the device is powered on and connected."
-            )
-        except Exception as e:
-            print(f"[Movement] Command failed: {str(e)}")
-        finally:
-            session.close()
+                if response.status_code in [200, 201, 202]:
+                    success = True
+                    break
+                else:
+                    print(
+                        f"[Movement] Warning: Unexpected status code {response.status_code}"
+                    )
+                    if current_retry < max_retries:
+                        print(f"[Movement] Retrying in 1 second...")
+                        time.sleep(1)
+
+            except requests.exceptions.Timeout:
+                print(f"[Movement] Attempt {current_retry} timed out.")
+                if current_retry < max_retries:
+                    print(f"[Movement] Retrying in 1 second...")
+                    time.sleep(1)
+            except requests.exceptions.ConnectionError:
+                print(f"[Movement] Attempt {current_retry} connection failed.")
+                if current_retry < max_retries:
+                    print(f"[Movement] Retrying in 1 second...")
+                    time.sleep(1)
+            except Exception as e:
+                print(f"[Movement] Attempt {current_retry} failed: {str(e)}")
+                if current_retry < max_retries:
+                    print(f"[Movement] Retrying in 1 second...")
+                    time.sleep(1)
+
+        if not success:
+            print("[Movement] All attempts failed.")
+
+        session.close()
 
         # Send additional control commands if HTTP control is enabled
         if ENABLE_HTTP:
@@ -146,7 +151,7 @@ def process_detection(predictions):
         return "SLOW", False  # Default to SLOW (stop) for safety
 
     # Initialize variables
-    detected_no = False
+    detected_green = False
     highest_confidence = 0
     action = "SLOW"  # Default to SLOW (stop)
     buzzer = False
@@ -163,16 +168,16 @@ def process_detection(predictions):
         if confidence > highest_confidence:
             highest_confidence = confidence
 
-        # Check for 'no' signal with confidence threshold
-        if class_name == "no" and confidence > 0.4:  # Using same threshold as before
-            detected_no = True
-            print("[DEBUG] Detected 'no' signal")
+        # Check for green signal with lower confidence threshold
+        if class_name == "green" and confidence > 0.1:  # Changed from 0.4 to 0.10
+            detected_green = True
+            print("[DEBUG] Detected green signal")
 
-    # Simplified decision logic - GO on 'no', SLOW otherwise
-    if detected_no:
-        action = "GO"
+    # Simplified decision logic - GO on green, SLOW otherwise
+    if detected_green:
+        action = "GO"  # This will trigger backward movement in send_control_commands
         buzzer = False
-        print("[DEBUG] Setting action to GO due to 'no' signal")
+        print("[DEBUG] Setting action to GO due to green signal")
     else:
         action = "SLOW"
         buzzer = False
